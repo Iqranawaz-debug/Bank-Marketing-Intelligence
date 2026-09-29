@@ -153,3 +153,7 @@ Held-Out Evaluation
 Explainability
           ↓
 Interactive Streamlit Application
+
+### Live Demo
+
+[Open Bank Marketing Intelligence](https://bank-marketing-intelligence-carun64aee6xuak9rj2vmj.streamlit.app/)
