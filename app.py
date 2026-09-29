@@ -1,325 +1,350 @@
-import streamlit as st
+"""Bank Marketing Intelligence: a saved-model Streamlit data product."""
+import logging
 import pandas as pd
-import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
-import joblib
+import streamlit as st
+from src.config import CATEGORIES, FEATURES, LABELS, NUMERIC
+from src.data_processing import load_data, read_prediction_csv
+from src.predict import load_artifacts, local_sensitivity, predict_customers
+from src.presentation import DISPLAY_LABELS, FIELD_HELP, display_category, threshold_explanation
+from src.visualization import TEAL, insight_text, rate_chart, rate_table, style_chart
 
-# ----------------------------------------------------------------------------
-# Page config & styling
-# ----------------------------------------------------------------------------
-st.set_page_config(
-    page_title="Bank Marketing Intelligence",
-    page_icon="🏦",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
+logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+logger = logging.getLogger(__name__)
+st.set_page_config(page_title="Bank Marketing Intelligence", page_icon="🏦", layout="wide")
+st.markdown("""<style>
+.block-container {padding-top: 4.5rem; max-width: 1480px;}
+[data-testid="stMetric"] {background: white; border: 1px solid #dce5ed; border-radius: 12px; padding: 16px;}
+[data-testid="stMetricLabel"] {color: #526680;}
+[data-testid="stMetricLabel"] p {white-space: normal;}
+[data-testid="stMetricValue"] {font-size: 1.8rem;}
+h1 {letter-spacing: -1.1px;}
+[data-testid="stSidebar"] {border-right: 1px solid #dce5ed;}
+</style>""", unsafe_allow_html=True)
 
-PRIMARY = "#2563eb"
-SUCCESS = "#16a34a"
-DANGER = "#dc2626"
-BG_CARD = "#0f172a"
 
-st.markdown(f"""
-<style>
-    .stApp {{ background-color: #0b1120; }}
-    .metric-card {{
-        background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
-        border: 1px solid #334155;
-        border-radius: 14px;
-        padding: 18px 20px;
-        text-align: center;
-    }}
-    .metric-card h2 {{ color: white; margin: 0; font-size: 30px; }}
-    .metric-card p {{ color: #94a3b8; margin: 4px 0 0 0; font-size: 13px; text-transform: uppercase; letter-spacing: 0.05em;}}
-    h1, h2, h3 {{ color: #f1f5f9 !important; }}
-    .stTabs [data-baseweb="tab-list"] {{ gap: 6px; }}
-    .stTabs [data-baseweb="tab"] {{
-        background-color: #1e293b; border-radius: 8px 8px 0 0; padding: 10px 18px; color: #cbd5e1;
-    }}
-    .stTabs [aria-selected="true"] {{ background-color: {PRIMARY} !important; color: white !important; }}
-    .prediction-box {{
-        border-radius: 16px; padding: 30px; text-align: center; margin-top: 10px;
-    }}
-</style>
-""", unsafe_allow_html=True)
-
-# ----------------------------------------------------------------------------
-# Data & model loading
-# ----------------------------------------------------------------------------
 @st.cache_data
-def load_data():
-    return pd.read_csv("bank_clean.csv")
+def cached_data():
+    logger.info("Application dataset loaded")
+    return load_data()
+
 
 @st.cache_resource
-def load_model():
-    model = joblib.load("model.pkl")
-    columns = joblib.load("columns.pkl")
-    metrics = joblib.load("metrics.pkl")
-    return model, columns, metrics
+def cached_model():
+    logger.info("Application model startup")
+    return load_artifacts()
 
-@st.cache_data
-def load_importances():
-    return pd.read_csv("feature_importances.csv", index_col=0)
 
-df = load_data()
-model, model_columns, metrics = load_model()
-importances = load_importances()
+def chart(figure, height=380):
+    st.plotly_chart(style_chart(figure, height), width="stretch")
 
-df_display = df.copy()
-df_display["deposit_flag"] = df_display["deposit"].map({"yes": 1, "no": 0})
 
-# ----------------------------------------------------------------------------
-# Sidebar
-# ----------------------------------------------------------------------------
+def metric_row(values):
+    for column, (name, value) in zip(st.columns(len(values)), values):
+        column.metric(name, value)
+
+
+def heading(kicker, title, text):
+    st.caption(kicker.upper())
+    st.title(title)
+    st.write(text)
+
+
+try:
+    df = cached_data()
+except Exception:
+    logger.error("Dataset initialization failed")
+    st.error("The project dataset could not be loaded. Restore bank.csv with the expected schema and restart.")
+    st.stop()
+
+model, report = None, None
+try:
+    model, report = cached_model()
+except Exception:
+    logger.error("Model initialization failed")
+
+PAGES = ["Executive Dashboard", "Exploratory Analysis", "Business Insights", "Customer Prediction", "Batch Prediction", "Model Performance", "Model Explainability", "Model Information", "About Project"]
 with st.sidebar:
-    st.markdown("## 🏦 Bank Marketing")
-    st.markdown("Intelligence Dashboard")
-    st.markdown("---")
-    st.markdown(f"**Records:** {len(df):,}")
-    st.markdown(f"**Subscription rate:** {df_display['deposit_flag'].mean()*100:.1f}%")
-    st.markdown(f"**Best model:** XGBoost")
-    st.markdown(f"**ROC-AUC:** {metrics['ROC-AUC']:.3f}")
-    st.markdown("---")
-    st.caption("Built from an EDA + predictive modeling project on the Bank Marketing dataset (Kaggle, janiobachmann). Duration was excluded from modeling to avoid target leakage.")
+    st.markdown("## Bank Marketing Intelligence")
+    st.caption("Campaign analytics & customer response")
+    page = st.radio("Workspace", PAGES, label_visibility="collapsed")
+    st.divider()
+    st.caption("DATASET SNAPSHOT")
+    st.write(f"**{len(df):,}** customer records")
+    st.write(f"**{df.deposit_flag.mean():.1%}** subscribed in this sample")
+    if report:
+        st.caption(f"Selected model · {report['selected_model']}")
+    st.caption("Portfolio demonstration · historical sample")
 
-# ----------------------------------------------------------------------------
-# Header
-# ----------------------------------------------------------------------------
-st.markdown("# Bank Marketing Campaign Intelligence")
-st.markdown("##### Explore the data, understand what drives subscriptions, and score new customers in real time.")
-st.markdown("")
+if report is None:
+    st.warning("Prediction artifacts are unavailable or incompatible. Run `python train_model.py` in the project environment, then restart the app. Data exploration remains available.")
+    if page in PAGES[3:8]:
+        st.stop()
 
-tab1, tab2, tab3, tab4 = st.tabs(["📊 Overview", "🔍 Explore the Data", "🤖 Predict a Customer", "🧠 Model Performance"])
+if page == "Executive Dashboard":
+    heading("Campaign analytics & prediction", "Bank Marketing Intelligence", "Analyze historical bank campaigns and estimate whether a customer will subscribe to a term deposit before a planned call.")
+    metric_row([("Customer records", f"{len(df):,}"), ("Sample subscription", f"{df.deposit_flag.mean():.1%}"), ("Selected model", report["selected_model"] if report else "Unavailable"), ("Test ROC-AUC", f"{report['metrics']['ROC-AUC']:.3f}" if report else "Unavailable")])
+    st.write("")
+    left, right = st.columns([1.2, 1])
+    with left:
+        chart(rate_chart(df, "job", "Subscription rate by occupation"), 430)
+    with right:
+        chart(rate_chart(df, "poutcome", "Previous campaign outcomes"), 310)
+        st.info("The dotted line is the overall sample subscription rate. Hover for group sizes. Unknown outcomes remain unknown; they do not always mean no prior contact.")
+    st.subheader("What this project demonstrates")
+    st.write("Exploratory analysis · Business analytics · Machine learning · Model evaluation · Explainability · Interactive prediction")
+    st.subheader("Historical findings")
+    for line in insight_text(df)[:3]:
+        st.write(line)
+    st.caption("Observed sample rates are not bank-wide conversion forecasts. Model scores are uncalibrated estimates, not guaranteed outcomes.")
 
-# ============================================================================
-# TAB 1: OVERVIEW
-# ============================================================================
-with tab1:
-    c1, c2, c3, c4 = st.columns(4)
-    with c1:
-        st.markdown(f'<div class="metric-card"><h2>{len(df):,}</h2><p>Total Customers</p></div>', unsafe_allow_html=True)
-    with c2:
-        st.markdown(f'<div class="metric-card"><h2>{df_display["deposit_flag"].mean()*100:.1f}%</h2><p>Subscription Rate</p></div>', unsafe_allow_html=True)
-    with c3:
-        st.markdown(f'<div class="metric-card"><h2>{metrics["ROC-AUC"]:.3f}</h2><p>Model ROC-AUC</p></div>', unsafe_allow_html=True)
-    with c4:
-        st.markdown(f'<div class="metric-card"><h2>{metrics["Accuracy"]*100:.1f}%</h2><p>Model Accuracy</p></div>', unsafe_allow_html=True)
+elif page == "Exploratory Analysis":
+    heading("Explore / historical sample", "Explore campaign responses", "Filter the original records. All charts and rates below use the selected cohort, without modeling caps.")
+    c1, c2, c3 = st.columns(3)
+    jobs = c1.multiselect("Occupation", CATEGORIES["job"])
+    marital = c2.multiselect("Marital status", CATEGORIES["marital"])
+    ages = c3.slider("Age range", int(df.age.min()), int(df.age.max()), (int(df.age.min()), int(df.age.max())))
+    cohort = df[df.age.between(*ages)]
+    if jobs:
+        cohort = cohort[cohort.job.isin(jobs)]
+    if marital:
+        cohort = cohort[cohort.marital.isin(marital)]
+    if cohort.empty:
+        st.info("No records match these filters. Widen the selection.")
+        st.stop()
+    metric_row([("Selected records", f"{len(cohort):,}"), ("Subscription rate", f"{cohort.deposit_flag.mean():.1%}"), ("Median campaign contacts", f"{cohort.campaign.median():.0f}")])
+    group = st.selectbox("Analysis focus", ["Dataset overview", "Customer demographics", "Financial characteristics", "Campaign and contact", "Historical outcomes", "Feature relationships"])
+    if group == "Dataset overview":
+        chart(px.histogram(cohort, x="deposit", color="deposit", labels={**DISPLAY_LABELS, "count": "Customer records"}, title="Subscriptions in the selected cohort", color_discrete_sequence=[TEAL, "#8597ad"]))
+        st.caption("This sample is close to balanced. Its response mix may differ from live campaigns.")
+        st.dataframe(cohort.drop(columns="deposit_flag").head(200).rename(columns=DISPLAY_LABELS), width="stretch", hide_index=True)
+        st.caption("Explorer shows the first 200 matching records. The download contains the full cohort.")
+        st.download_button("Download filtered data", cohort.drop(columns="deposit_flag").to_csv(index=False).encode(), "filtered_bank.csv", "text/csv")
+    elif group == "Customer demographics":
+        a, b = st.columns(2)
+        with a:
+            chart(px.histogram(cohort, x="age", color="deposit", labels={**DISPLAY_LABELS, "count": "Customer records"}, nbins=35, barmode="overlay", opacity=.7, title="Age distribution by response"))
+        with b:
+            chart(rate_chart(cohort, "education", "Subscription by education"))
+        pivot = pd.crosstab(cohort.job, cohort.marital, values=cohort.deposit_flag, aggfunc="mean")
+        pivot.index.name, pivot.columns.name = "Occupation", "Marital status"
+        chart(px.imshow(pivot, text_auto=".0%", zmin=0, zmax=1, aspect="auto", color_continuous_scale="Teal", title="Occupation × marital status: observed rate"), 470)
+        st.caption("Distributions show counts; the heatmap shows rates. Small subgroups can produce unstable rates; empty cells have no observations.")
+    elif group == "Financial characteristics":
+        chart(px.box(cohort, x="deposit", y="balance", color="deposit", labels=DISPLAY_LABELS, title="Yearly balance by subscription outcome"))
+        feature = st.selectbox("Financial attribute", ["housing", "loan", "default"], format_func=DISPLAY_LABELS.get)
+        chart(rate_chart(cohort, feature, f"Subscription by {LABELS[feature].lower()}"))
+        st.caption("Extreme balances are retained here. The model caps balance using limits learned only from its training rows.")
+    elif group == "Campaign and contact":
+        table = rate_table(cohort, "month").set_index("month").reindex(CATEGORIES["month"]).reset_index()
+        a, b = st.columns(2)
+        with a:
+            chart(px.bar(table, x="month", y="Customers", labels={"month": "Contact month", "Customers": "Customer records"}, title="Monthly campaign volume", color_discrete_sequence=[TEAL]))
+        with b:
+            chart(px.line(table, x="month", y="Rate (%)", labels={"month": "Contact month", "Rate (%)": "Subscription rate (%)"}, markers=True, title="Monthly subscription rate"))
+        chart(rate_chart(cohort, "contact", "Subscription by contact method"))
+        grouped = cohort.assign(contact_band=pd.cut(cohort.campaign, [0, 1, 3, 5, 10000], labels=["1", "2–3", "4–5", "6+"]))
+        chart(rate_chart(grouped, "contact_band", "Subscription by number of campaign contacts"))
+        st.caption("Volume and rate have separate axes and units. Month and contact count associations may reflect campaign selection or repeated attempts.")
+    elif group == "Historical outcomes":
+        chart(rate_chart(cohort, "poutcome", "Subscription by previous campaign outcome"))
+        st.dataframe(rate_table(cohort, "poutcome").drop(columns="Rate"), hide_index=True, width="stretch")
+        st.caption("Unknown means the previous outcome is unrecorded. Prior contact is independently derived from pdays ≠ -1.")
+    else:
+        numeric = cohort[NUMERIC + ["deposit_flag"]].copy()
+        numeric["was_contacted_previously"] = cohort.pdays.ne(-1).astype(int)
+        chart(px.imshow(numeric.rename(columns=DISPLAY_LABELS).corr(), text_auto=".2f", zmin=-1, zmax=1, color_continuous_scale="RdBu_r", title="Pearson correlations"), 540)
+        st.caption("Correlation captures linear association, not causality. The pdays=-1 sentinel affects its numeric correlation.")
 
-    st.markdown("<br>", unsafe_allow_html=True)
-    col1, col2 = st.columns([1.3, 1])
+elif page == "Business Insights":
+    heading("Interpret / descriptive evidence", "What the data suggests", "Use these findings to form testable campaign hypotheses. They do not establish which interventions will cause more subscriptions.")
+    for feature, title in [("job", "Customer segments"), ("contact", "Contact strategy"), ("poutcome", "Previous campaign response")]:
+        a, b = st.columns([1.4, 1])
+        with a:
+            chart(rate_chart(df, feature, title), 380 if feature == "job" else 280)
+        with b:
+            table = rate_table(df, feature)
+            best = table.iloc[0]
+            st.subheader(display_category(best[feature]))
+            st.markdown("**Finding**")
+            st.write("This group showed the highest observed subscription rate for this attribute in the historical sample.")
+            st.markdown("**Evidence**")
+            st.write(f"{best['Rate (%)']:.1f}% subscribed, based on {int(best.Customers):,} records; {(best.Rate-df.deposit_flag.mean())*100:+.1f} percentage points versus the sample average.")
+            st.markdown("**Business interpretation**")
+            interpretations = {"job": "Compare segment response and contact volumes when designing a future campaign experiment.", "contact": "The pattern motivates testing contact channels; it does not prove one channel causes better responses.", "poutcome": "Prior response may help prioritize review of customer history, subject to eligibility and contact preferences."}
+            st.write(interpretations[feature])
+    summary = "Bank Marketing: descriptive analysis\n\n" + "\n".join(insight_text(df))
+    st.download_button("Download analysis summary", summary.encode("utf-8"), "business_insights.txt", "text/plain")
 
-    with col1:
-        st.markdown("#### Conversion rate by job")
-        job_rate = df_display.groupby("job")["deposit_flag"].mean().sort_values(ascending=True) * 100
-        fig = px.bar(job_rate, orientation="h", labels={"value": "Subscription Rate (%)", "job": ""},
-                     color=job_rate.values, color_continuous_scale="Blues")
-        fig.update_layout(showlegend=False, coloraxis_showscale=False, plot_bgcolor="rgba(0,0,0,0)",
-                           paper_bgcolor="rgba(0,0,0,0)", font_color="#e2e8f0", height=420)
-        st.plotly_chart(fig, use_container_width=True)
-
-    with col2:
-        st.markdown("#### Previous outcome impact")
-        po = df_display.groupby("poutcome")["deposit_flag"].mean().sort_values(ascending=False) * 100
-        fig = px.pie(values=po.values, names=po.index, hole=0.5,
-                      color_discrete_sequence=px.colors.sequential.Tealgrn)
-        fig.update_layout(plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
-                           font_color="#e2e8f0", height=420)
-        st.plotly_chart(fig, use_container_width=True)
-
-    st.markdown("#### Key takeaways")
-    k1, k2, k3 = st.columns(3)
-    k1.info("**Prior success is gold.** Customers who said 'yes' before convert at 91%+ this time.")
-    k2.success("**Students & retirees convert best.** Both segments beat the overall base rate by 25+ points.")
-    k3.warning("**Age is U-shaped, not linear.** Both very young and older customers out-convert the middle.")
-
-# ============================================================================
-# TAB 2: EXPLORE
-# ============================================================================
-with tab2:
-    st.markdown("#### Filter the data")
-    fc1, fc2, fc3 = st.columns(3)
-    with fc1:
-        job_filter = st.multiselect("Job", sorted(df["job"].unique()), default=[])
-    with fc2:
-        marital_filter = st.multiselect("Marital status", sorted(df["marital"].unique()), default=[])
-    with fc3:
-        age_range = st.slider("Age range", int(df.age.min()), int(df.age.max()),
-                               (int(df.age.min()), int(df.age.max())))
-
-    filtered = df_display.copy()
-    if job_filter:
-        filtered = filtered[filtered["job"].isin(job_filter)]
-    if marital_filter:
-        filtered = filtered[filtered["marital"].isin(marital_filter)]
-    filtered = filtered[(filtered.age >= age_range[0]) & (filtered.age <= age_range[1])]
-
-    st.caption(f"Showing {len(filtered):,} of {len(df):,} records")
-    st.markdown("---")
-
-    col1, col2 = st.columns(2)
-    with col1:
-        st.markdown("#### Age distribution by outcome")
-        fig = px.histogram(filtered, x="age", color="deposit", barmode="overlay", nbins=40,
-                            color_discrete_map={"yes": SUCCESS, "no": DANGER}, opacity=0.7)
-        fig.update_layout(plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)", font_color="#e2e8f0")
-        st.plotly_chart(fig, use_container_width=True)
-
-        st.markdown("#### Balance distribution by outcome")
-        fig = px.box(filtered, x="deposit", y="balance", color="deposit",
-                     color_discrete_map={"yes": SUCCESS, "no": DANGER})
-        fig.update_layout(plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)", font_color="#e2e8f0")
-        st.plotly_chart(fig, use_container_width=True)
-
-    with col2:
-        st.markdown("#### Job × Marital status heatmap (subscription rate)")
-        pivot = pd.crosstab(filtered["job"], filtered["marital"], values=filtered["deposit_flag"], aggfunc="mean")
-        fig = px.imshow(pivot, color_continuous_scale="YlGnBu", aspect="auto", text_auto=".2f")
-        fig.update_layout(plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)", font_color="#e2e8f0")
-        st.plotly_chart(fig, use_container_width=True)
-
-        st.markdown("#### Monthly campaign volume vs. conversion")
-        month_order = ["jan","feb","mar","apr","may","jun","jul","aug","sep","oct","nov","dec"]
-        m = filtered.groupby("month").agg(volume=("deposit_flag", "count"), rate=("deposit_flag", "mean")).reindex(month_order).dropna()
-        fig = go.Figure()
-        fig.add_bar(x=m.index, y=m.volume, name="Volume", marker_color="#334155")
-        fig.add_scatter(x=m.index, y=m.rate * m.volume.max(), name="Conversion rate (scaled)",
-                          yaxis="y", line=dict(color=SUCCESS, width=3))
-        fig.update_layout(plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)", font_color="#e2e8f0",
-                           legend=dict(orientation="h", y=1.1))
-        st.plotly_chart(fig, use_container_width=True)
-
-    st.markdown("#### Correlation heatmap (numeric features)")
-    num_cols = ["age", "balance", "day", "campaign", "pdays", "previous", "was_contacted_previously", "deposit_flag"]
-    corr = filtered[num_cols].corr()
-    fig = px.imshow(corr, color_continuous_scale="RdBu_r", zmin=-1, zmax=1, text_auto=".2f", aspect="auto")
-    fig.update_layout(plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)", font_color="#e2e8f0", height=450)
-    st.plotly_chart(fig, use_container_width=True)
-
-# ============================================================================
-# TAB 3: PREDICT
-# ============================================================================
-with tab3:
-    st.markdown("#### Score a hypothetical customer")
-    st.caption("Fill in the details below (no call duration needed — this predicts *before* the call happens).")
-
-    with st.form("prediction_form"):
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            age = st.slider("Age", 18, 95, 40)
-            job = st.selectbox("Job", sorted(df["job"].unique()))
-            marital = st.selectbox("Marital status", sorted(df["marital"].unique()))
-            education = st.selectbox("Education", sorted(df["education"].unique()))
-        with c2:
-            balance = st.number_input("Account balance (€)", value=1000, step=100)
-            housing = st.selectbox("Has housing loan?", ["no", "yes"])
-            loan = st.selectbox("Has personal loan?", ["no", "yes"])
-            default = st.selectbox("Has credit in default?", ["no", "yes"])
-        with c3:
-            contact = st.selectbox("Contact method", sorted(df["contact"].unique()))
-            month = st.selectbox("Contact month", ["jan","feb","mar","apr","may","jun","jul","aug","sep","oct","nov","dec"], index=4)
-            campaign = st.slider("Contacts this campaign", 1, 15, 2)
-            poutcome = st.selectbox("Previous campaign outcome", sorted(df["poutcome"].unique()))
-
-        c4, c5 = st.columns(2)
-        with c4:
-            previous = st.slider("Number of previous contacts", 0, 20, 0)
-        with c5:
-            pdays = st.slider("Days since last contact (-1 = never)", -1, 400, -1)
-
-        submitted = st.form_submit_button("🔮 Predict Subscription Likelihood", use_container_width=True)
-
+elif page == "Customer Prediction":
+    heading("Score / one customer", "Estimate subscription likelihood", "Enter a hypothetical customer and the planned contact details. Call duration is excluded because it is unavailable before the call.")
+    st.caption("Start with the first historical example below, or edit the profile. The score is an uncalibrated model estimate.")
+    with st.expander("How the decision threshold works"):
+        st.write(threshold_explanation(report["threshold"]))
+    with st.form("customer_form"):
+        columns = st.columns(3)
+        values = {}
+        defaults = df.iloc[0].to_dict()
+        bounds = {"age": (18, 120), "balance": (-1e9, 1e9), "day": (1, 31), "campaign": (1, 10000), "pdays": (-1, 100000), "previous": (0, 10000)}
+        groups = [["age", "job", "marital", "education", "balance"], ["default", "housing", "loan", "previous", "pdays"], ["contact", "day", "month", "campaign", "poutcome"]]
+        for column, fields, title in zip(columns, groups, ["Customer profile", "Finances & history", "Planned contact"]):
+            with column:
+                st.subheader(title)
+                for feature in fields:
+                    if feature in CATEGORIES:
+                        choices = CATEGORIES[feature]
+                        default = defaults[feature]
+                        values[feature] = st.selectbox(LABELS[feature], choices, index=choices.index(default), format_func=display_category, help=FIELD_HELP.get(feature), key=f"input_{feature}")
+                    else:
+                        low, high = bounds[feature]
+                        values[feature] = st.number_input(LABELS[feature], min_value=low, max_value=high, value=float(defaults[feature]) if feature == "balance" else int(defaults[feature]), help=FIELD_HELP.get(feature), key=f"input_{feature}")
+        submitted = st.form_submit_button("Predict subscription", type="primary", width="stretch")
     if submitted:
-        was_contacted_previously = 0 if pdays == -1 else 1
-        day = 15  # neutral default, day-of-month has negligible standalone effect
+        st.session_state.pop("customer_result", None)
+        try:
+            row = pd.DataFrame([values])
+            result = predict_customers(model, row, report["threshold"])
+            st.session_state["customer_result"] = (row, result)
+        except ValueError as exc:
+            st.error(str(exc))
+        except Exception:
+            logger.error("Manual prediction failed")
+            st.error("Prediction could not be completed. Check the model environment and retry.")
+    if "customer_result" in st.session_state:
+        row, result = st.session_state["customer_result"]
+        probability = result.subscription_probability.iloc[0]
+        st.subheader("Prediction result")
+        st.caption("Result reflects the last submitted profile. Submit again after editing fields.")
+        outcome = "Likely to subscribe" if result.prediction.iloc[0] == "yes" else "Unlikely to subscribe"
+        st.markdown(f"### {outcome}")
+        metric_row([("Estimated model probability", f"{probability:.1%}"), ("Decision threshold", f"{report['threshold']:.1%}")])
+        st.progress(float(probability))
+        st.write("The score is above the decision threshold." if result.prediction.iloc[0] == "yes" else "The score is below the decision threshold.")
+        if (row.pdays.iloc[0] == -1 and row.previous.iloc[0] > 0) or (row.pdays.iloc[0] >= 0 and row.previous.iloc[0] == 0):
+            st.warning("Previous-contact fields appear inconsistent. Review them before interpreting the score.")
+        st.subheader("How this profile changes the score")
+        sensitivity = local_sensitivity(model, row, report["reference"]).sort_values("difference")
+        sensitivity["feature"] = sensitivity.feature.map(DISPLAY_LABELS)
+        sensitivity["difference"] *= 100
+        chart(px.bar(sensitivity, x="difference", y="feature", orientation="h", title="Individual feature sensitivity", labels={"difference": "Score difference vs. reference (percentage points)", "feature": "Customer or campaign input"}, color_discrete_sequence=[TEAL]), 430)
+        st.caption("Each bar compares this score with the score after replacing one input by its training median/mode. This is sensitivity analysis, not SHAP or a causal explanation. Effects do not add up; replacements may create unrealistic profiles.")
+        st.download_button("Download prediction", result.to_csv(index=False).encode(), "customer_prediction.csv", "text/csv")
 
-        input_dict = {
-            "age": age, "balance": balance, "day": day, "campaign": campaign,
-            "pdays": pdays, "previous": previous, "was_contacted_previously": was_contacted_previously,
-            "job": job, "marital": marital, "education": education, "default": default,
-            "housing": housing, "loan": loan, "contact": contact, "month": month, "poutcome": poutcome,
-        }
-        input_df = pd.DataFrame([input_dict])
-        input_encoded = pd.get_dummies(input_df, columns=["job","marital","education","default",
-                                                            "housing","loan","contact","month","poutcome"])
-        input_encoded = input_encoded.reindex(columns=model_columns, fill_value=0)
+elif page == "Batch Prediction":
+    heading("Score / customer batch", "Turn a CSV into a scored list", "Upload up to 10,000 rows (5 MB). Scoring uses the saved pipeline and never retrains the model.")
+    st.write("Download the example → Add your customer rows → Upload, review and download scores.")
+    st.download_button("Download example CSV", df[FEATURES].head(5).to_csv(index=False).encode(), "example_customers.csv", "text/csv")
+    with st.expander("Required input schema"):
+        st.dataframe(pd.DataFrame([{"column": f, "description": LABELS[f], "accepted values": ", ".join(CATEGORIES[f]) if f in CATEGORIES else "Finite number; see example"} for f in FEATURES]), hide_index=True, width="stretch")
+        st.write("No blank cells. Use the literal unknown only where listed. Extra columns, including duration, deposit and identifiers, are excluded from scoring and output. Row order is preserved.")
+    upload = st.file_uploader("Customer CSV", type=["csv"])
+    if upload is not None:
+        try:
+            batch = read_prediction_csv(upload.getvalue())
+            results = predict_customers(model, batch, report["threshold"])
+            positives = int(results.prediction.eq("yes").sum())
+            metric_row([("Rows scored", f"{len(results):,}"), ("Predicted positive", f"{positives:,}"), ("Predicted negative", f"{len(results)-positives:,}"), ("Positive share", f"{positives/len(results):.1%}")])
+            st.caption(f"Classification cutoff: {report['threshold']:.1%}. Positive share is a model output, not an observed conversion rate.")
+            with st.expander("Preview validated input"):
+                st.dataframe(batch.head(20).rename(columns=DISPLAY_LABELS), hide_index=True, width="stretch")
+            st.subheader("Scored customers")
+            display_results = results.head(200).rename(columns={**DISPLAY_LABELS, "subscription_probability": "Model score", "prediction": "Predicted subscription", "decision_threshold": "Threshold"})
+            display_results["Model score"] = display_results["Model score"].map(lambda value: f"{value:.1%}")
+            display_results["Threshold"] = display_results["Threshold"].map(lambda value: f"{value:.1%}")
+            st.dataframe(display_results, width="stretch", hide_index=True)
+            st.caption("Preview shows up to 200 rows. Download includes every scored row in original order. Uploaded customer data is not written to disk or logged.")
+            st.download_button("Download scored CSV", results.to_csv(index=False).encode(), "scored_customers.csv", "text/csv")
+        except ValueError as exc:
+            logger.warning("Batch validation rejected")
+            st.error(str(exc))
+        except Exception:
+            logger.error("Batch prediction failed")
+            st.error("Unable to score this file. Check the model environment and try the example CSV.")
 
-        proba = model.predict_proba(input_encoded)[0][1]
-        pred = "Likely to Subscribe ✅" if proba >= 0.5 else "Unlikely to Subscribe ❌"
-        color = SUCCESS if proba >= 0.5 else DANGER
+elif page == "Model Performance":
+    heading("Evaluate / held-out evidence", f"Selected model: {report['selected_model']}", f"Selected using {report['selection_metric']}. Evaluation below uses {report['test_rows']:,} held-out records.")
+    metric_row([(name, f"{report['metrics'][name]:.1%}" if name == "Recall" else f"{report['metrics'][name]:.3f}") for name in ["ROC-AUC", "Average precision", "F1", "Recall"]])
+    st.write(f"**Accuracy:** {report['metrics']['Accuracy']:.1%} · **Precision:** {report['metrics']['Precision']:.1%} · **Decision threshold:** {report['threshold']:.1%}")
+    st.caption(f"Class metrics use the saved threshold {report['threshold']:.3f}. ROC-AUC and average precision evaluate ranking across thresholds.")
+    st.subheader("Model comparison · 0.50 cutoff")
+    comparison = pd.DataFrame(report["comparison_at_0_5"])
+    comparison.insert(1, "Selected", comparison.Model.eq(report["selected_model"]))
+    compact = comparison[["Model", "CV average precision", "ROC-AUC", "Average precision", "Recall", "F1"]].rename(columns={"CV average precision": "CV AP", "Average precision": "Test AP"})
+    def highlight_selected(row):
+        return ["background-color: #dcefed; font-weight: bold" if row["Model"] == report["selected_model"] else "" for _ in row]
+    st.dataframe(compact.style.apply(highlight_selected, axis=1).format({c: "{:.3f}" for c in compact.columns if c != "Model"}), width="stretch", hide_index=True)
+    st.caption("AP = average precision. All columns except CV AP are held-out results. Highlighted row is the selected model.")
+    winner = comparison[comparison.Model.eq(report["selected_model"])].iloc[0]
+    runner = comparison[~comparison.Model.eq(report["selected_model"])].sort_values("CV average precision", ascending=False).iloc[0]
+    st.write(f"{report['selected_model']} was selected for CV average precision of {winner['CV average precision']:.3f}, versus {runner['CV average precision']:.3f} for {runner.Model}. This measures ranking quality for subscriptions; it is not a claim of superiority on every metric.")
+    with st.expander("Full comparison and CV variability"):
+        st.dataframe(comparison, width="stretch", hide_index=True)
+    st.caption("Comparison class metrics use a common 0.5 threshold. Selection uses training CV average precision, not the test ranking. CV scores after tuning are not independent estimates of generalization.")
+    a, b = st.columns([1, 2])
+    curves = report["curves"]
+    with a:
+        chart(px.imshow(curves["confusion_matrix"], x=["Predicted no", "Predicted yes"], y=["Actual no", "Actual yes"], text_auto=True, color_continuous_scale="Teal", title="Confusion matrix"), 340)
+    with b:
+        st.subheader("What the errors mean")
+        tn, fp = curves["confusion_matrix"][0]
+        fn, tp = curves["confusion_matrix"][1]
+        st.write(f"The model identified **{tp:,}** of **{tp+fn:,}** subscribers and missed **{fn:,}**. It also flagged **{fp:,}** customers who did not subscribe.")
+        st.write(threshold_explanation(report["threshold"]))
+    b, c = st.columns(2)
+    with b:
+        fig = go.Figure(go.Scatter(x=curves["fpr"], y=curves["tpr"], name="Selected model", line_color=TEAL))
+        fig.add_scatter(x=[0, 1], y=[0, 1], line_dash="dash", name="Chance")
+        fig.update_layout(title="ROC curve", xaxis_title="False positive rate", yaxis_title="True positive rate", showlegend=False)
+        chart(fig, 340)
+    with c:
+        fig = go.Figure(go.Scatter(x=curves["recall"], y=curves["precision"], line_color=TEAL))
+        fig.add_hline(y=report["test_positive_rate"], line_dash="dash")
+        fig.update_layout(title="Precision–recall curve", xaxis_title="Recall", yaxis_title="Precision")
+        chart(fig, 340)
+    st.subheader("Threshold trade-offs on training predictions")
+    thresholds = pd.DataFrame(report["threshold_analysis"])
+    chart(px.line(thresholds, x="threshold", y=["Precision", "Recall", "F1"], labels={"threshold": "Decision threshold", "value": "Metric score", "variable": "Metric"}, title="Precision, recall and F1 by threshold"))
+    st.caption(report["threshold_method"] + " Hyperparameters were chosen on the same training folds; threshold analysis is not nested validation.")
+    st.download_button("Download model comparison", comparison.to_csv(index=False).encode(), "model_comparison.csv", "text/csv")
 
-        st.markdown(f"""
-        <div class="prediction-box" style="background: linear-gradient(135deg, {color}22 0%, #0f172a 100%); border: 2px solid {color};">
-            <h1 style="color:{color}; margin:0;">{proba*100:.1f}%</h1>
-            <p style="color:#e2e8f0; font-size:18px; margin-top:6px;">{pred}</p>
-        </div>
-        """, unsafe_allow_html=True)
+elif page == "Model Explainability":
+    heading("Explain / model behavior", "Which inputs support the model's ranking?", "Permutation importance measures how much held-out average precision drops when a feature is randomly shuffled.")
+    st.subheader("Global model behavior")
+    importance = pd.DataFrame(report["importance"]).sort_values("mean")
+    importance["feature"] = importance.feature.map(DISPLAY_LABELS)
+    chart(px.bar(importance, x="mean", y="feature", error_x="std", orientation="h", title="Held-out permutation importance", color_discrete_sequence=[TEAL], labels={"mean": "Drop in average precision", "feature": "Customer or campaign input"}), 560)
+    st.info("Higher bars indicate stronger reliance by this fitted model. Error bars show standard deviation across five shuffles, not confidence intervals. Correlated inputs can share importance; negative values can occur through noise.")
+    st.write("For business interpretation, a high month or previous-outcome importance means these inputs help distinguish responses in this historical sample. It does not mean changing them will cause a subscription.")
+    st.subheader("Individual prediction explanations")
+    st.write("Open Customer Prediction and submit a profile to see how its score changes when one input is replaced with a typical training value. These effects describe model sensitivity, not causal effects or additive SHAP contributions.")
 
-        fig = go.Figure(go.Indicator(
-            mode="gauge+number",
-            value=proba * 100,
-            number={'suffix': "%", 'font': {'color': '#e2e8f0'}},
-            gauge={
-                'axis': {'range': [0, 100], 'tickcolor': '#94a3b8'},
-                'bar': {'color': color},
-                'steps': [
-                    {'range': [0, 40], 'color': '#1e293b'},
-                    {'range': [40, 70], 'color': '#334155'},
-                    {'range': [70, 100], 'color': '#475569'},
-                ],
-            }
-        ))
-        fig.update_layout(paper_bgcolor="rgba(0,0,0,0)", font_color="#e2e8f0", height=280,
-                           margin=dict(t=30, b=10))
-        st.plotly_chart(fig, use_container_width=True)
+elif page == "Model Information":
+    heading("Document / reproducible workflow", "The model card", "Predict deposit = yes for a planned campaign contact, using historical customer and campaign information.")
+    st.markdown("**Workflow:** raw data → stratified split → train-fitted caps → prior-contact feature → numeric scaling + one-hot encoding → cross-validation and tuning → selected pipeline → saved-model inference.")
+    st.write(f"Training: {report['train_rows']:,} rows. Test: {report['test_rows']:,} rows. Split seed: {report['seed']}. Selected algorithm: {report['selected_model']}.")
+    st.write("Three existing algorithm families are retained, plus a dummy baseline. A small 3-fold grid tests regularization/depth and unweighted versus mildly weighted classes. No oversampling is used. Average precision prioritizes subscription ranking; ROC-AUC and class metrics provide complementary views.")
+    st.write("Balance is capped at training 1st/99th percentiles; campaign at the training 99th percentile. All transforms refit inside each training fold. Unknown remains an explicit category. The API rejects missing or invalid fields. Duration is excluded throughout inference.")
+    st.dataframe(pd.DataFrame([{"Feature": f, "Meaning": LABELS[f]} for f in FEATURES]), hide_index=True, width="stretch")
+    with st.expander("Chosen parameters, environment and tuning results"):
+        st.json({"parameters": report["parameters"], "versions": report["versions"], "python": report["python"], "capping_bounds": report["capping_bounds"], "dataset_sha256": report["dataset_sha256"]})
+        st.dataframe(pd.DataFrame(report["tuning"]), width="stretch", hide_index=True)
+    st.subheader("Limitations & intended use")
+    st.markdown("""- Historical sample, with no verified population sampling design or temporal holdout. Sample conversion is not a live-campaign forecast.
+- The original notebook previously examined a similar test split. These results are reproducible holdout diagnostics, not a new external benchmark.
+- Scores are uncalibrated. Threshold maximizes training F1 without explicit contact costs or business value.
+- Planned month/day/contact/count must be known at scoring time. Historical final campaign counts may differ from what was available at an earlier contact.
+- No fairness audit, prospective validation, drift monitoring, authentication, or customer-data retention system is included.
+- Use for portfolio demonstration and hypothesis generation; operational adoption needs fresh data and governance review.""")
 
-        st.markdown("##### What's driving this prediction")
-        top_feats = importances.head(6)
-        st.dataframe(top_feats.rename(columns={"importance": "Global Importance"}), use_container_width=True)
-        st.caption("These are the model's globally most important features — not a per-prediction explanation, but a guide to what generally moves the needle.")
-
-# ============================================================================
-# TAB 4: MODEL PERFORMANCE
-# ============================================================================
-with tab4:
-    st.markdown("#### Final model: XGBoost Classifier")
-    m1, m2, m3, m4, m5 = st.columns(5)
-    for col, (label, key) in zip([m1,m2,m3,m4,m5],
-                                   [("Accuracy","Accuracy"), ("Precision","Precision"),
-                                    ("Recall","Recall"), ("F1 Score","F1"), ("ROC-AUC","ROC-AUC")]):
-        col.markdown(f'<div class="metric-card"><h2>{metrics[key]:.3f}</h2><p>{label}</p></div>', unsafe_allow_html=True)
-
-    st.markdown("<br>", unsafe_allow_html=True)
-    col1, col2 = st.columns([1.2, 1])
-    with col1:
-        st.markdown("#### Top 15 Feature Importances")
-        top15 = importances.head(15).sort_values("importance")
-        fig = px.bar(top15, x="importance", y=top15.index, orientation="h",
-                     color="importance", color_continuous_scale="Viridis")
-        fig.update_layout(showlegend=False, coloraxis_showscale=False, plot_bgcolor="rgba(0,0,0,0)",
-                           paper_bgcolor="rgba(0,0,0,0)", font_color="#e2e8f0", height=500)
-        st.plotly_chart(fig, use_container_width=True)
-
-    with col2:
-        st.markdown("#### Why XGBoost was chosen")
-        st.markdown("""
-        Three models were trained and compared on the same held-out test set:
-
-        | Model | Accuracy | Precision | Recall | ROC-AUC |
-        |---|---|---|---|---|
-        | Logistic Regression | 0.692 | 0.709 | 0.593 | 0.758 |
-        | Random Forest | 0.728 | 0.761 | 0.621 | 0.785 |
-        | **XGBoost** | **0.741** | **0.769** | **0.647** | **0.796** |
-
-        XGBoost was selected as the production model because it had the
-        highest ROC-AUC — the most relevant metric for ranking a call list
-        by likelihood, rather than a hard yes/no cutoff.
-
-        **Note on `duration`:** call duration was deliberately excluded from
-        every model. It's only known *after* a call ends, so including it
-        would leak information from the future and make the model unusable
-        for its actual purpose — deciding who to call *before* dialing.
-        """)
-
-    st.markdown("---")
-    st.caption("Model trained on 80% of 11,162 records, evaluated on a held-out 20% test set with stratified sampling. See the full analysis notebook for the complete EDA, outlier treatment, and modeling methodology.")
+elif page == "About Project":
+    heading("About / portfolio", "Bank Marketing Intelligence", "A reproducible data science project connecting exploratory analysis, model evaluation, and an interactive prediction experience.")
+    st.subheader("Dataset")
+    st.write("The repository contains bank.csv with 11,162 records, 16 original input columns and the deposit target. The original project attributes it to the Bank Marketing dataset shared by janiobachmann on Kaggle. Confirm redistribution terms before publishing. Duration is excluded from the deployed model.")
+    st.subheader("Skills demonstrated")
+    st.write("Exploratory analysis · business interpretation · leakage prevention · feature engineering · model comparison · cross-validation · threshold analysis · explainability · input validation · testing · Streamlit application development")
+    st.subheader("Technology")
+    st.write("Python, pandas, NumPy, scikit-learn, XGBoost, joblib, Plotly, and Streamlit.")
+    st.subheader("From analysis to application")
+    st.write("Historical data → exploratory analysis → business interpretation → reproducible model evaluation → explainable, interactive scoring.")
+    st.caption("This demonstration does not establish causal effects, guarantee customer behavior, or represent a bank's production deployment.")

@@ -1,0 +1,21 @@
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ipynb_checkpoints/
+.idea/
+.vscode/
+.env
+.env.*
+.streamlit/secrets.toml
+*.log
+.DS_Store
+Thumbs.db
+
+# Local QA outputs and user exports
+exports/
+.coverage
+htmlcov/
+.ruff_cache/
+*.tmp

@@ -1,0 +1,6 @@
+age,balance,day,campaign,pdays,previous,job,marital,education,default,housing,loan,contact,month,poutcome
+59,2343,5,1,-1,0,admin.,married,secondary,no,yes,no,unknown,may,unknown
+56,45,5,1,-1,0,admin.,married,secondary,no,no,no,unknown,may,unknown
+41,1270,5,1,-1,0,technician,married,secondary,no,yes,no,unknown,may,unknown
+55,2476,5,1,-1,0,services,married,secondary,no,yes,no,unknown,may,unknown
+54,184,5,2,-1,0,admin.,married,tertiary,no,no,no,unknown,may,unknown

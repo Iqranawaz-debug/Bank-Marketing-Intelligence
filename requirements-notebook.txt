@@ -1,0 +1,5 @@
+# Optional dependencies for rerunning the preserved exploratory notebook.
+-r requirements.txt
+matplotlib>=3.10,<4
+seaborn>=0.13,<1
+jupyterlab>=4,<5
